@@ -1,8 +1,10 @@
 const dgram = require("dgram");
 const mdns = require("multicast-dns")();
 const merge = require("./utils/merge");
+const EventEmitter = require('events');
 
-const danteServiceTypes = ["_netaudio-cmc._udp", "_netaudio-dbc._udp", "_netaudio-arc._udp", "_netaudio-chan._udp"];
+// const danteServiceTypes = ["_netaudio-cmc._udp", "_netaudio-dbc._udp", "_netaudio-arc._udp", "_netaudio-chan._udp"];
+const danteQuery = '_netaudio-arc._udp.local'
 const danteControlPort = 4440;
 const sequenceId1 = Buffer.from([0x29]);
 const danteConstant = Buffer.from([0x27]);
@@ -34,51 +36,61 @@ const parseTxChannelNames = (reply) => {
     const names = { channelNames: { tx: [] } };
     const namesString = reply.toString();
     const channelsCount = reply[10];
-
-    let name = "";
-
-    for (let i = namesString.length - 1; i > 50; i--) {
-        if (reply[i] === 0) {
-            console.log(reverse(name));
-            names.channelNames.tx.push(reverse(name));
-            name = "";
-        } else {
-            name += namesString[i];
-        }
-    }
+    const endOfSearch = namesString.lastIndexOf(String.fromCharCode(0x0e));
+    names.channelNames.tx = namesString.substring(endOfSearch + 1).split(String.fromCharCode(0x00), channelsCount);
+    // let name = "";
+    //
+    // for (let i = endOfSearch + 1; i < namesString.length; i++) {
+    //     if (reply[i] === 0) {
+    //         console.log(name);
+    //         names.channelNames.tx.push(name);
+    //         name = "";
+    //     } else {
+    //         name += namesString[i];
+    //     }
+    // }
 
     return names;
 };
 
-class Dante {
+class Dante extends EventEmitter {
     constructor() {
+        super();
         this.debug = false;
         this.devices;
         this.devicesList = [];
         this.socket = dgram.createSocket("udp4");
 
         this.socket.on("message", this.parseReply.bind(this));
-        this.socket.bind(danteControlPort);
+        this.socket.bind(0); /* don't want to bind the dante control port as it's blocked by DVS,
+                                instead we take random port allocated by the OS and only send messages to the dante control port
+                                this is what I've seen the dante controller app do, and in testing it works */
 
         mdns.on("response", this.parseDevices.bind(this));
     }
 
-    parseDevices(response) {
-        this.devicesList = response?.answers?.filter((answer) => {
-            for (let danteServiceType of danteServiceTypes) {
-                if (answer.name.includes(danteServiceType)) {
-                    return true;
-                }
-                return false;
+    parseDevices(res, rinfo) {
+        const answer = res?.answers?.[0];
+
+        if (answer?.name?.includes(danteQuery) & answer?.type == 'PTR') {
+            const name = answer.data.replace(`.${danteQuery}`, '');
+            if (this.devicesList.findIndex(x => x.name === name) == -1) {
+                this.devicesList.push({
+                    name: name,
+                    address: rinfo.address
+
+                });
+                this.emit('newDevice', this.devicesList.at(-1));
             }
-        });
+        }
+
     }
 
     parseReply(reply, rinfo) {
         const deviceIP = rinfo.address;
         const replySize = rinfo.size;
-        const deviceData = {};
-
+        let deviceData = {};
+        const devIndex = this.devicesList.findIndex(x => x.address === deviceIP);
         if (this.debug) {
             // Log replies when in debug mode
             console.log(`Rx (${reply.length}): ${reply.toString("hex")}`);
@@ -87,20 +99,22 @@ class Dante {
         if (reply[0] === danteConstant[0] && reply[1] === sequenceId1[0]) {
             if (replySize === bufferToInt(reply.slice(2, 4))) {
                 const commandId = reply.slice(6, 8);
-                deviceData[deviceIP] = {};
                 switch (bufferToInt(commandId)) {
                     case 4096:
-                        deviceData[deviceIP] = parseChannelCount(reply);
+                        deviceData = parseChannelCount(reply);
                         break;
-                    case 8208:
-                        deviceData[deviceIP] = parseTxChannelNames(reply);
+                    case 8192:
+                        deviceData = parseTxChannelNames(reply);
                         break;
                 }
 
-                // this.devices = merge(this.devices, deviceData);
+                if (devIndex > -1) {
+                    this.devicesList[devIndex] = { ...this.devicesList[devIndex], ...deviceData };
+                    this.emit('devicesUpdated', this.devicesList[devIndex]);
+                }
                 if (this.debug) {
                     // Log parsed device information when in debug mode
-                    console.log(deviceData);
+                    console.log(this.devicesList[devIndex]);
                 }
             }
         }
@@ -140,7 +154,7 @@ class Dante {
                 commandId = Buffer.from("3000", "hex");
                 break;
             case "txChannelNames":
-                commandId = Buffer.from("2010", "hex");
+                commandId = Buffer.from("2000", "hex"); // in testing, sniffing packets from dante controller, looks like 2000 is the correct command id
                 break;
             case "setRxChannelName":
                 commandId = Buffer.from([0x30, 0x01]);
@@ -187,7 +201,7 @@ class Dante {
         this.sendCommand(commandBuffer, ipaddress);
     }
 
-    setChannelName(ipaddress, channelName = "", channelType = "rx", channelNumber = 0) {
+    setChannelName(ipaddress, channelNumber = 0, channelType = "rx", channelName = "") {
         const channelNameBuffer = Buffer.from(channelName, "ascii");
         let commandBuffer = Buffer.alloc(1);
         let channelNumberBuffer = Buffer.alloc(2);
@@ -217,19 +231,19 @@ class Dante {
         this.sendCommand(commandBuffer, ipaddress);
     }
 
-    resetChannelName(ipaddress, channelType = "rx", channelNumber = 0) {
+    resetChannelName(ipaddress, channelNumber = 0, channelType = "rx") {
         this.setChannelName(ipaddress, "", channelType, channelNumber);
     }
 
-    makesubscription(ipaddress, sourceChannelName, sourceDeviceName, destinationChannelNumber = 0) {
+    makeSubscription(ipaddress, destinationChannelNumber = 0, sourceChannelName, sourceDeviceName) {
         const sourceChannelNameBuffer = Buffer.from(sourceChannelName, "ascii");
         const sourceDeviceNameBuffer = Buffer.from(sourceDeviceName, "ascii");
 
         const commandArguments = Buffer.concat([
             Buffer.from("0401", "hex"),
             intToBuffer(destinationChannelNumber),
-            Buffer.from("005c006d", "hex"),
-            Buffer.alloc(107 - sourceChannelNameBuffer.length - sourceDeviceNameBuffer.length),
+            Buffer.from("005c005f", "hex"),
+            Buffer.alloc(83 - sourceChannelNameBuffer.length - sourceDeviceNameBuffer.length),
             sourceChannelNameBuffer,
             Buffer.alloc(1),
             sourceDeviceNameBuffer,
@@ -240,12 +254,11 @@ class Dante {
         this.sendCommand(commandBuffer, ipaddress);
     }
 
-    clearsubscription(ipaddress, destinationChannelNumber) {
+    clearSubscription(ipaddress, destinationChannelNumber = 0) {
         const commandArguments = Buffer.concat([
             Buffer.from("0401", "hex"),
             intToBuffer(destinationChannelNumber),
-            Buffer.from("005c006d", "hex"),
-            Buffer.alloc(108),
+            Buffer.alloc(77),
         ]);
 
         const commandBuffer = this.makeCommand("subscription", commandArguments);
@@ -254,17 +267,24 @@ class Dante {
     }
 
     getChannelCount(ipaddress) {
+        const devIndex = this.devicesList.findIndex(x => x.address === ipaddress);
         const commandBuffer = this.makeCommand("channelCount");
         this.sendCommand(commandBuffer, ipaddress);
-
-        return this.devices[ipaddress]?.channelCount;
+        if (devIndex > -1) {
+            if (this.debug) console.log((({ address, channelCount }) => ({ address, channelCount }))(this.devicesList[devIndex]));
+            return this.devicesList[devIndex]?.channelCount;
+        }
     }
 
     getChannelNames(ipaddress) {
+        const devIndex = this.devicesList.findIndex(x => x.address === ipaddress);
         const commandBuffer = this.makeCommand("txChannelNames", Buffer.from("0001000100", "hex"));
         this.sendCommand(commandBuffer, ipaddress);
+        if (devIndex > -1) {
+            if (this.debug) console.log((({ address, channelNames }) => ({ address, channelNames }))(this.devicesList[devIndex]));
+            return this.devices[devIndex]?.channelNames;
+        }
 
-        return this.devices[ipaddress]?.channelNames;
     }
 
     get devices() {

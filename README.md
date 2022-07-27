@@ -49,12 +49,12 @@ const dante = new Dante();
 
 ### Making a subscription
 
-`dante.makesubscription("192.168.0.1", "Input 1", "MyDanteDeviceName", 3);`
-`dante.makesubscription("192.168.0.1", "Input 2", "MyDanteDeviceName", 4);`
+`dante.makeSubscription("192.168.0.1", "Input 1", "MyDanteDeviceName", 3);`
+`dante.makeSubscription("192.168.0.1", "Input 2", "MyDanteDeviceName", 4);`
 
 ### Clearing a subscription
 
-`dante.clearsubscription("192.168.0.113", 2);`
+`dante.clearSubscription("192.168.0.113", 2);`
 
 ### Get number of Tx and Rx channels from a device
 
