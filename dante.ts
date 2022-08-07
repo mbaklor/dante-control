@@ -9,26 +9,48 @@ const sequenceId1 = Buffer.from([0x29]);
 const danteConstant = Buffer.from([0x27]);
 const udpclients = [8700, 8701, 8702, 8703, 8704, 8705, 8706, 8707];
 
-const getRandomInt = (max) => {
+type Statuses = boolean | "unresolved" | "Incorrect channel format" | "no flows" | "no audio";
+type ChannelTypes = "tx" | "rx";
+
+interface rxChannels {
+    name: string;
+    status: Statuses;
+    txDevice: string;
+    txChannel: string;
+}
+interface danteDevice {
+    address: string;
+    name: string;
+    channelCount: {
+        tx: number;
+        rx: number;
+    };
+    channels: {
+        tx: string[];
+        rx: rxChannels[];
+    };
+}
+
+const getRandomInt = (max: number) => {
     return Math.floor(Math.random() * max);
 };
 
-const intToBuffer = (int) => {
+const intToBuffer = (int: number) => {
     let intBuffer = Buffer.alloc(2);
     intBuffer.writeUInt16BE(int);
     return intBuffer;
 };
 
-const bufferToInt = (buffer) => {
+const bufferToInt = (buffer: Buffer) => {
     return buffer.readUInt16BE();
 };
 
-const readFromBuffer = (buffer, stringStart) => {
+const readFromBuffer = (buffer: Buffer, stringStart: number) => {
     const stringEnd = buffer.indexOf(0, stringStart);
     return buffer.subarray(stringStart, stringEnd).toString();
 };
 
-const parseDeviceInfo = (reply, device) => {
+const parseDeviceInfo = (reply: Buffer, device: danteDevice) => {
     let changed = false;
     const replyString = reply.toString();
     const nameStartIndex = replyString.indexOf(String.fromCharCode(0x10, 0x04));
@@ -43,7 +65,7 @@ const parseDeviceInfo = (reply, device) => {
     return changed;
 };
 
-const parseChannelCount = (reply, device) => {
+const parseChannelCount = (reply: Buffer, device: danteDevice) => {
     let changed = false;
     let txCount = bufferToInt(reply.subarray(12, 14));
     let rxCount = bufferToInt(reply.subarray(14, 16));
@@ -55,18 +77,19 @@ const parseChannelCount = (reply, device) => {
     return changed;
 };
 
-const parseTxChannelNames = (reply, device) => {
+const parseTxChannelNames = (reply: Buffer, device: danteDevice) => {
     let changed = false;
     const channelsCount = reply[11];
     let start = 12;
-    let txName;
-    let chIndex;
-    let channels = [];
+    let txName: string;
+    let chIndex: number;
+    let channels: Buffer[] = [];
     for (let i = 0; i < channelsCount; i++) {
         channels.push(reply.subarray(start, start + 8));
         chIndex = bufferToInt(channels[i].subarray(0, 2)) - 1;
         txName = readFromBuffer(reply, bufferToInt(channels[i].subarray(6, 8)));
         start = start + 8;
+
         if (device.channels.tx[chIndex] != txName) {
             device.channels.tx[chIndex] = txName;
             changed = true;
@@ -76,31 +99,32 @@ const parseTxChannelNames = (reply, device) => {
     return changed;
 };
 
-const parseRxChannelNames = (reply, device) => {
+const parseRxChannelNames = (reply: Buffer, device: danteDevice) => {
     let changed = false;
     const channelsCount = reply[10];
-    let template = {
+    let template: rxChannels = {
         name: "",
         status: false,
         txDevice: "",
         txChannel: "",
     };
-    const statuses = new Map();
+
+    const statuses = new Map<number, Statuses>();
     statuses.set(0, false);
     statuses.set(1, "unresolved");
     statuses.set(9, true);
     statuses.set(16, "Incorrect channel format");
     statuses.set(18, "no flows");
 
-    const audio = ["no audio", true];
+    const audio: Statuses[] = ["no audio", true];
 
     let start = 12;
-    let chIndex;
-    let status;
-    let rxName;
-    let txChannel;
-    let txDevice;
-    const channels = [];
+    let chIndex: number;
+    let status: Statuses;
+    let rxName: string;
+    let txChannel: string;
+    let txDevice: string;
+    const channels: Buffer[] = [];
     for (let i = 0; i < channelsCount; i++) {
         channels.push(reply.subarray(start, start + 20));
         chIndex = bufferToInt(channels[i].subarray(0, 2)) - 1;
@@ -115,9 +139,9 @@ const parseRxChannelNames = (reply, device) => {
             txDevice = "";
         } else {
             txChannel = readFromBuffer(reply, bufferToInt(channels[i].subarray(6, 8)));
+
             txDevice = readFromBuffer(reply, bufferToInt(channels[i].subarray(8, 10)));
         }
-
         template.name = rxName;
         template.status = status;
         template.txDevice = txDevice;
@@ -132,11 +156,12 @@ const parseRxChannelNames = (reply, device) => {
 };
 
 class Dante extends EventEmitter {
-    #devicesList;
-    #debug;
-    mdns;
-    socket;
-    constructor(ipinterface) {
+    #devicesList: danteDevice[];
+    #debug: boolean;
+    mdns: Mdns;
+    socket: dgram.Socket;
+
+    constructor(ipinterface: string) {
         super();
         this.mdns = new Mdns({
             interface: ipinterface,
@@ -145,10 +170,11 @@ class Dante extends EventEmitter {
         this.#devicesList = [];
 
         this.socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+
         this.socket.on("message", this.#parseReply.bind(this));
 
         udpclients.forEach(
-            function (port) {
+            function (port: number) {
                 var udpServer = dgram.createSocket({ type: "udp4", reuseAddr: true });
                 udpServer.bind(port, () => {
                     udpServer.setMulticastLoopback(true);
@@ -176,11 +202,12 @@ class Dante extends EventEmitter {
         });
     }
 
-    #parseMulticast(res, rinfo) {
+    #parseMulticast(res: Buffer, rinfo: dgram.RemoteInfo) {
         const multicastHeader = 0xff;
         const deviceIP = rinfo.address;
         const replySize = rinfo.size;
         const devIndex = this.#devicesList.findIndex((x) => x.address === deviceIP);
+
         if (res[0] === multicastHeader && res[1] === multicastHeader) {
             if (replySize === bufferToInt(res.subarray(2, 4))) {
                 const commandId = res.subarray(26, 28);
@@ -203,7 +230,7 @@ class Dante extends EventEmitter {
         }
     }
 
-    #parseDevices(res, rinfo) {
+    #parseDevices(res: Mdns.decode, rinfo: dgram.RemoteInfo) {
         let firstSuccess = false;
         const answers = res?.answers;
         answers.every((answer) => {
@@ -217,6 +244,7 @@ class Dante extends EventEmitter {
                     return false;
                 }
             });
+
             if (isDante && answer?.type == "PTR" && !answer?.name.includes("_sub")) {
                 const devIndex = this.#devicesList.findIndex((x) => x.address === rinfo.address);
                 if (answer?.data.includes("@")) {
@@ -256,10 +284,10 @@ class Dante extends EventEmitter {
         });
     }
 
-    #parseReply(reply, rinfo) {
+    #parseReply(reply: Buffer, rinfo: dgram.RemoteInfo) {
         const deviceIP = rinfo.address;
         const replySize = rinfo.size;
-        let changed;
+        let changed: boolean;
         const devIndex = this.#devicesList.findIndex((x) => x.address === deviceIP);
         if (this.#debug) {
             // Log replies when in debug mode
@@ -273,6 +301,7 @@ class Dante extends EventEmitter {
                     case 4096:
                         changed = parseChannelCount(reply, this.#devicesList[devIndex]);
                         this.emit(`channelCountRead`, this.#devicesList[devIndex]);
+
                         break;
                     case 8192:
                         changed = parseTxChannelNames(reply, this.#devicesList[devIndex]);
@@ -295,7 +324,7 @@ class Dante extends EventEmitter {
         }
     }
 
-    #sendCommand(command, host, port = danteControlPort) {
+    #sendCommand(command: Buffer, host: string, port = danteControlPort) {
         if (this.#debug) {
             // Log sent bytes when in debug mode
             console.log(`Tx (${command.length}): ${command.toString("hex")}`);
@@ -304,7 +333,7 @@ class Dante extends EventEmitter {
         this.socket.send(command, 0, command.length, port, host);
     }
 
-    #makeCommand(command, commandArguments = Buffer.alloc(2)) {
+    #makeCommand(command: string, commandArguments = Buffer.alloc(2)) {
         let sequenceId2 = Buffer.alloc(2);
         sequenceId2.writeUInt16BE(getRandomInt(65535));
 
@@ -349,22 +378,22 @@ class Dante extends EventEmitter {
         return Buffer.concat([danteConstant, sequenceId1, commandLength, sequenceId2, commandId, Buffer.alloc(2), commandArguments, Buffer.alloc(1)]);
     }
 
-    getDeviceInfo(ipaddress) {
+    getDeviceInfo(ipaddress: string) {
         const commandBuffer = this.#makeCommand("deviceInfo");
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
-    setDeviceName(ipaddress, name) {
+    setDeviceName(ipaddress: string, name: string) {
         const commandBuffer = this.#makeCommand("setDeviceName", Buffer.from(name, "ascii"));
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
-    resetDeviceName(ipaddress) {
+    resetDeviceName(ipaddress: string) {
         const commandBuffer = this.#makeCommand("setDeviceName");
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
-    getChannelCount(ipaddress) {
+    getChannelCount(ipaddress: string) {
         const devIndex = this.#devicesList.findIndex((x) => x.address === ipaddress);
         const commandBuffer = this.#makeCommand("channelCount");
         this.#sendCommand(commandBuffer, ipaddress);
@@ -380,9 +409,9 @@ class Dante extends EventEmitter {
         }
     }
 
-    getChannelNames(ipaddress, channelType = "tx") {
+    getChannelNames(ipaddress: string, channelType: ChannelTypes = "tx") {
         const devIndex = this.#devicesList.findIndex((x) => x.address === ipaddress);
-        let command;
+        let command: Buffer;
         let channelCount = this.#devicesList[devIndex]?.channelCount?.[channelType];
         for (let i = 1; i < channelCount; i += 16) {
             command = Buffer.concat([Buffer.from("0001", "hex"), Buffer.from(intToBuffer(i)), Buffer.alloc(1)]);
@@ -402,7 +431,7 @@ class Dante extends EventEmitter {
         }
     }
 
-    setChannelName(ipaddress, channelNumber = 0, channelType = "rx", channelName = "") {
+    setChannelName(ipaddress: string, channelNumber = 0, channelType: ChannelTypes = "rx", channelName = "") {
         const channelNameBuffer = Buffer.from(channelName, "ascii");
         let commandBuffer = Buffer.alloc(1);
         let channelNumberBuffer = Buffer.alloc(2);
@@ -432,11 +461,11 @@ class Dante extends EventEmitter {
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
-    resetChannelName(ipaddress, channelNumber = 0, channelType = "rx") {
+    resetChannelName(ipaddress: string, channelNumber = 0, channelType: ChannelTypes = "rx") {
         this.setChannelName(ipaddress, channelNumber, channelType);
     }
 
-    makeSubscription(ipaddress, destinationChannelNumber = 0, sourceChannelName, sourceDeviceName) {
+    makeSubscription(ipaddress: string, destinationChannelNumber = 0, sourceChannelName: string, sourceDeviceName: string) {
         const sourceChannelNameBuffer = Buffer.from(sourceChannelName, "ascii");
         const sourceDeviceNameBuffer = Buffer.from(sourceDeviceName, "ascii");
 
@@ -451,12 +480,15 @@ class Dante extends EventEmitter {
             sourceDeviceNameBuffer,
         ]);
         const commandBuffer = this.#makeCommand("subscription", commandArguments);
+
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
-    clearSubscription(ipaddress, destinationChannelNumber = 0) {
+    clearSubscription(ipaddress: string, destinationChannelNumber = 0) {
         const commandArguments = Buffer.concat([Buffer.from("0401", "hex"), intToBuffer(destinationChannelNumber), Buffer.alloc(77)]);
+
         const commandBuffer = this.#makeCommand("subscription", commandArguments);
+
         this.#sendCommand(commandBuffer, ipaddress);
     }
 
@@ -464,7 +496,7 @@ class Dante extends EventEmitter {
         return this.#devicesList;
     }
 
-    set debug(value) {
+    set debug(value: boolean) {
         if (typeof value == "boolean") {
             this.#debug = value;
         } else {
