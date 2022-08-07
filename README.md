@@ -8,16 +8,16 @@ And initial bash script investigations documented on [Gearspace](https://gearspa
 
 ## Current Features:
 
--   Make Dante Crosspoin
+-   Make Dante Crosspoint
 -   Change device names
 -   Change Tx and Rx channel names
 -   Reset device and channel names
+
 -   Get device Tx and Rx channel count
-
-## Work in progress:
-
 -   Get device Tx channel names
 -   Get device Rx channel names
+
+## Work in progress:
 
 ## Installation
 

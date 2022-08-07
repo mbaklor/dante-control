@@ -8,9 +8,9 @@ dante.debug = true;
 // Set the channel name - provide the IP address of the device and a new channel namme.
 // Name must be less than 32 characters.
 // Decide whether the channel is a TX or RX channel and provide the channel number to act on
-dante.setChannelName("10.32.61.12", "abcdefghiklmnopqrstuvwxyz", "rx", 1);
-dante.setChannelName("10.32.61.13", "atxchannelname", "tx", 2);
+dante.setChannelName("10.32.61.12", 1, "rx", "abcdefghiklmnopqrstuvwxyz");
+dante.setChannelName("10.32.61.13", 2, "tx", "atxchannelname");
 
 // Same as above - resets the name to the device default.
-dante.resetChannelName("10.32.61.13", "rx", 1);
-dante.resetChannelName("10.32.61.13", "tx", 1);
+dante.resetChannelName("10.32.61.13", 1, "rx");
+dante.resetChannelName("10.32.61.13", 2, "tx");
